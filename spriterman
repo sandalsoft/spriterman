@@ -798,10 +798,35 @@ cmd_update() {
 }
 
 cmd_export() {
-    local sprite_name="${1:-}"
+    local sprite_name=""
+    local include_claude_contents=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --include-claude-contents)
+                include_claude_contents=true
+                shift
+                ;;
+            -*)
+                _error "Unknown option: $1"
+                _error "Usage: spriterman export [--include-claude-contents] <name>"
+                exit 3
+                ;;
+            *)
+                if [[ -z "$sprite_name" ]]; then
+                    sprite_name="$1"
+                else
+                    _error "Unexpected argument: $1"
+                    exit 3
+                fi
+                shift
+                ;;
+        esac
+    done
 
     if [[ -z "$sprite_name" ]]; then
-        _error "Usage: spriterman export <name>"
+        _error "Usage: spriterman export [--include-claude-contents] <name>"
         _error "Missing sprite name"
         exit 3
     fi
@@ -913,26 +938,47 @@ cmd_export() {
     fi
     echo ""
 
-    # Claude config summary
+    # Claude config summary (metadata only by default to avoid leaking secrets)
     echo "# =============================================================================="
     echo "# Claude Config (~/.claude/)"
     echo "# =============================================================================="
     echo ""
+    echo "# NOTE: File contents are not shown by default to prevent accidental secret leakage."
+    echo "# Use --include-claude-contents to include file contents (review output carefully!)."
+    echo ""
     set +e
     local claude_config
-    claude_config=$(sprite exec -s "$sprite_name" -- bash -c '
-        if [[ -d ~/.claude ]]; then
-            echo "# Files in ~/.claude/:"
-            ls -la ~/.claude/ 2>/dev/null | tail -n +2
-            echo ""
-            if [[ -f ~/.claude/settings.json ]]; then
-                echo "# ~/.claude/settings.json contents:"
-                cat ~/.claude/settings.json 2>/dev/null
+    if [[ "$include_claude_contents" == "true" ]]; then
+        # User explicitly requested contents - show with warning
+        echo "# WARNING: File contents included - may contain sensitive data!"
+        echo ""
+        claude_config=$(sprite exec -s "$sprite_name" -- bash -c '
+            if [[ -d ~/.claude ]]; then
+                echo "# Files in ~/.claude/:"
+                ls -la ~/.claude/ 2>/dev/null | tail -n +2
+                echo ""
+                for f in ~/.claude/*; do
+                    if [[ -f "$f" ]]; then
+                        echo "# --- Contents of $f ---"
+                        cat "$f" 2>/dev/null
+                        echo ""
+                    fi
+                done
+            else
+                echo "# ~/.claude/ directory not found"
             fi
-        else
-            echo "# ~/.claude/ directory not found"
-        fi
-    ' 2>/dev/null)
+        ' 2>/dev/null)
+    else
+        # Default: metadata only (file list with sizes)
+        claude_config=$(sprite exec -s "$sprite_name" -- bash -c '
+            if [[ -d ~/.claude ]]; then
+                echo "# Files in ~/.claude/ (metadata only):"
+                ls -la ~/.claude/ 2>/dev/null | tail -n +2
+            else
+                echo "# ~/.claude/ directory not found"
+            fi
+        ' 2>/dev/null)
+    fi
     set -e
     echo "$claude_config"
 
@@ -949,13 +995,18 @@ Usage:
 Commands:
     create <name>     Create a new sprite with template configuration
     update <name>     Update an existing sprite with latest template
-    export <name>     Export sprite config to stdout
-    help              Show this help message
+    export [options] <name>
+                      Export sprite config to stdout
+
+Export Options:
+    --include-claude-contents
+                      Include Claude config file contents (may contain secrets!)
 
 Examples:
     spriterman create my-dev-sprite
     spriterman update my-dev-sprite
     spriterman export my-dev-sprite > config.sh
+    spriterman export --include-claude-contents my-dev-sprite
 
 Environment:
     DEBUG=1           Enable debug output
