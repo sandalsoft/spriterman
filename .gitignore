@@ -1,6 +1,9 @@
 # Claude Code local state (contains credentials and session data)
 .claude/
 
+# Flow-Next task tracking (development scaffolding)
+.flow/
+
 # Ralph automation state (entire directory)
 scripts/ralph/
 
