@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-02-02T01:42:23.169931Z",
+  "depends_on": [],
+  "epic": "fn-1-spriterman-cli-tool",
+  "id": "fn-1-spriterman-cli-tool.1",
+  "priority": null,
+  "spec_path": ".flow/tasks/fn-1-spriterman-cli-tool.1.md",
+  "status": "todo",
+  "title": "Scaffold project structure and config files",
+  "updated_at": "2026-02-02T18:34:15.686796Z"
+}

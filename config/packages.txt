@@ -1,0 +1,15 @@
+# Spriterman package manifest
+# Format: <manager>:<package>
+# Supported managers: apt, npm, pip
+
+# System packages (apt)
+apt:git
+apt:curl
+apt:jq
+apt:yq
+
+# Node.js global packages (npm)
+npm:pnpm
+
+# Python packages (pip/uv)
+pip:uv

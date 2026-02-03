@@ -1,0 +1,110 @@
+{
+  "created_at": "2026-02-02T01:43:42.751906Z",
+  "epic": {
+    "data": {
+      "branch_name": "fn-1-spriterman-cli-tool",
+      "completion_review_status": "unknown",
+      "completion_reviewed_at": null,
+      "created_at": "2026-02-02T01:41:24.333086Z",
+      "default_impl": null,
+      "default_review": null,
+      "default_sync": null,
+      "depends_on_epics": [],
+      "id": "fn-1-spriterman-cli-tool",
+      "next_task": 1,
+      "plan_review_status": "unknown",
+      "plan_reviewed_at": null,
+      "spec_path": ".flow/specs/fn-1-spriterman-cli-tool.md",
+      "status": "open",
+      "title": "Spriterman CLI Tool",
+      "updated_at": "2026-02-02T01:42:15.285838Z"
+    },
+    "spec": "# Spriterman CLI Tool\n\nA Bash CLI tool for creating and managing templated sprites on sprites.dev with pre-configured aliases, packages, and Claude Code settings.\n\n## Overview\n\nSpriterman automates the setup of new sprites with a consistent development environment. Instead of manually configuring each sprite, users run a single command that creates the sprite and applies their template configuration.\n\n**Repository**: github.com/sandalsoft/spriterman\n\n## Scope\n\n### In Scope\n- `spriterman create <name>` - Create sprite via API and apply full template\n- `spriterman update <name>` - Re-apply template to existing sprite (idempotent)\n- `spriterman export <name>` - Extract current sprite config to stdout\n- Config files: aliases.sh, packages.txt\n- Claude Code config sync (~/.claude/ directory)\n\n### Out of Scope (v1)\n- Multiple template profiles\n- Dotfiles management (user will add later)\n- SSH key management\n- Environment variable configuration\n- GUI or TUI interface\n\n## Architecture\n\n```mermaid\nflowchart TD\n    A[spriterman CLI] --> B{Command}\n    B -->|create| C[Create Sprite]\n    B -->|update| D[Update Sprite]\n    B -->|export| E[Export Config]\n    \n    C --> F[sprite create via CLI]\n    F --> G[Wait for Ready]\n    G --> H[Run Setup Steps]\n    \n    D --> I[Verify Sprite Exists]\n    I --> H\n    \n    H --> J[Install apt packages]\n    J --> K[Install npm globals]\n    K --> L[Install pip packages]\n    L --> M[Clone spriterman repo]\n    M --> N[Copy ~/.claude/]\n    N --> O[Install aliases to ~/.bashrc]\n    O --> P[Report Results]\n    \n    E --> Q[Connect to Sprite]\n    Q --> R[Extract aliases]\n    R --> S[List packages]\n    S --> T[Copy ~/.claude/]\n    T --> U[Output to stdout]\n```\n\n## Approach\n\n### CLI Framework\n- Use `sprite` CLI (not raw API) - handles auth automatically\n- Subcommand dispatch via `case` statement\n- Error collection array pattern - continue on failure, report all at end\n- Colored output with log levels (info, warn, error)\n- Strict mode: `set -euo pipefail`\n\n### Authentication\n- Primary: Relies on `sprite` CLI auth (user runs `sprite login` first)\n- Fallback: Check `$SPRITE_TOKEN` env var for direct API calls if needed\n- No token storage in spriterman itself\n\n### Idempotency Strategy (for update)\n- apt: Use `dpkg -l | grep -q` before install\n- npm: Use `npm list -g --depth=0` check\n- pip: Use `pip show` check\n- Aliases: Use `grep -qF` before appending to ~/.bashrc\n- ~/.claude/: Overwrite (merge not worth complexity)\n\n### Error Handling\n- Exit codes: 0=success, 1=partial failure, 2=fatal, 3=config error\n- Error array collects failures, reported at end\n- Each step logs success/failure with colored output\n- Non-zero exit only after all steps attempted\n\n## Phases\n\n### Phase 1: Foundation (Tasks 1-2)\n- Project scaffolding with directory structure\n- CLI framework with subcommand dispatch\n- Create command implementation\n\n### Phase 2: Complete Commands (Task 3)\n- Update command with idempotency\n- Export command with stdout output\n\n### Phase 3: Finalization (Task 4)\n- Claude config template\n- End-to-end testing on real sprite\n- Documentation updates\n\n## Alternatives Considered\n\n| Option | Pros | Cons | Decision |\n|--------|------|------|----------|\n| Raw API vs sprite CLI | More control, no CLI dependency | Complex auth, reinvent wheel | **Use sprite CLI** |\n| Bash vs Python | No dependencies, runs anywhere | Less maintainable at scale | **Bash for v1** (simple enough) |\n| Hardcoded config vs files | Simpler, single file | Can't customize without editing script | **Config files** |\n| Template repo clone vs embed | Easy updates, git-native | Extra network call, versioning | **Clone to /tmp** |\n\n## Non-Functional Requirements\n\n- **Performance**: Create command < 60s (excluding package install time)\n- **Reliability**: Partial failures don't block other steps\n- **Usability**: Clear error messages, colored output\n- **Portability**: Works on any system with bash 4+ and sprite CLI\n\n## Risks and Mitigations\n\n| Risk | Impact | Likelihood | Mitigation |\n|------|--------|------------|------------|\n| sprite CLI not installed | Fatal | Medium | Check on startup, clear error message |\n| Sprites API changes | Breaking | Low | Use stable v1 endpoints only |\n| Package install timeout | Partial failure | Medium | Continue with other steps, report |\n| GitHub clone fails | No aliases/config | Low | Retry once, fall back to cached if exists |\n| Large ~/.claude/ directory | Slow copy | Low | Use rsync for delta copies |\n\n## Quick Commands\n\n```bash\n# Create a new templated sprite\nspriterman create my-dev-sprite\n\n# Update existing sprite with latest template\nspriterman update my-dev-sprite\n\n# Export sprite config to file\nspriterman export my-dev-sprite > my-config.sh\n\n# Verify sprite CLI is available\nwhich sprite || echo \"Install sprite CLI first: curl https://sprites.dev/install.sh | bash\"\n```\n\n## Acceptance Criteria\n\n- [ ] `spriterman create <name>` creates a sprite and applies full template\n- [ ] `spriterman update <name>` re-applies template idempotently (no duplicate aliases)\n- [ ] `spriterman export <name>` outputs usable config to stdout\n- [ ] Partial failures don't prevent other steps from running\n- [ ] All failures reported at end with clear messages\n- [ ] README documents installation and usage\n- [ ] Works on fresh sprite with sprite CLI installed\n\n## Documentation Updates\n\n- Create README.md with installation, usage, and configuration\n- Add CONTRIBUTING.md (basic for now)\n- Update CLAUDE.md with project-specific context\n\n## References\n\n- [Sprites API Docs](https://docs.sprites.dev/api/v001-rc30/)\n- [sprite CLI Commands](https://docs.sprites.dev/cli/commands/)\n- [Bash Strict Mode](https://redsymbol.net/articles/unofficial-bash-strict-mode/)\n- Pattern: hedgedoc/cli for subcommand dispatch\n- Pattern: jnsgruk/firecracker-ubuntu for colored logging\n"
+  },
+  "epic_id": "fn-1-spriterman-cli-tool",
+  "schema_version": 2,
+  "tasks": [
+    {
+      "data": {
+        "assignee": null,
+        "claim_note": "",
+        "claimed_at": null,
+        "created_at": "2026-02-02T01:42:23.169931Z",
+        "depends_on": [],
+        "epic": "fn-1-spriterman-cli-tool",
+        "id": "fn-1-spriterman-cli-tool.1",
+        "priority": null,
+        "spec_path": ".flow/tasks/fn-1-spriterman-cli-tool.1.md",
+        "status": "todo",
+        "title": "Scaffold project structure and config files",
+        "updated_at": "2026-02-02T01:42:42.334593Z"
+      },
+      "id": "fn-1-spriterman-cli-tool.1",
+      "runtime": null,
+      "spec": "# fn-1-spriterman-cli-tool.1 Scaffold project structure and config files\n\n## Description\nCreate the initial project structure for spriterman in the github.com/sandalsoft/spriterman repository.\n\n**Size:** M\n**Files:** spriterman, config/aliases.sh, config/packages.txt, README.md\n\n## Approach\n\n1. Create directory structure:\n   ```\n   spriterman/\n   \u251c\u2500\u2500 spriterman              # main executable (empty for now)\n   \u251c\u2500\u2500 config/\n   \u2502   \u251c\u2500\u2500 aliases.sh          # shell aliases and functions\n   \u2502   \u2514\u2500\u2500 packages.txt        # package manifest\n   \u251c\u2500\u2500 claude/                  # placeholder for user's ~/.claude/\n   \u2502   \u2514\u2500\u2500 README.md           # instructions for adding config\n   \u2514\u2500\u2500 README.md\n   ```\n\n2. Create config/aliases.sh with all aliases from the interview:\n   - Claude/Codex shortcuts (gcy, co, cl, clm)\n   - Git shortcuts (gb, grao, grso, g, gd, lg, gl, p, etc.)\n   - Bun shortcuts (brd, brb, bt)\n   - NPM shortcuts (nrd, nrb, ns, nt, ni, etc.)\n   - Convert aliases with $1/$@ to shell functions\n\n3. Create config/packages.txt with format:\n   ```\n   apt:git\n   apt:curl\n   apt:jq\n   apt:yq\n   npm:pnpm\n   pip:uv\n   ```\n\n4. Create README.md with:\n   - Project description\n   - Prerequisites (sprite CLI)\n   - Installation\n   - Quick start\n   - Configuration\n\n## Key Context\n\n- Aliases using `$1` or `$@` must be shell functions, not aliases\n- The `$npmCommand` variable should default to `npm` if not set\n- Use XDG-compliant paths in documentation\n## Acceptance\n- [ ] Directory structure created: config/, claude/\n- [ ] config/aliases.sh contains all aliases from interview, functions for $1/$@\n- [ ] config/packages.txt lists: apt:git, apt:curl, apt:jq, apt:yq, npm:pnpm, pip:uv\n- [ ] README.md documents installation and basic usage\n- [ ] claude/README.md explains how to add user's ~/.claude/ contents\n- [ ] All files committed to repository\n## Done summary\nTBD\n\n## Evidence\n- Commits:\n- Tests:\n- PRs:\n"
+    },
+    {
+      "data": {
+        "assignee": null,
+        "claim_note": "",
+        "claimed_at": null,
+        "created_at": "2026-02-02T01:42:23.439425Z",
+        "depends_on": [
+          "fn-1-spriterman-cli-tool.1"
+        ],
+        "epic": "fn-1-spriterman-cli-tool",
+        "id": "fn-1-spriterman-cli-tool.2",
+        "priority": null,
+        "spec_path": ".flow/tasks/fn-1-spriterman-cli-tool.2.md",
+        "status": "todo",
+        "title": "Implement CLI framework and create command",
+        "updated_at": "2026-02-02T01:42:57.809076Z"
+      },
+      "id": "fn-1-spriterman-cli-tool.2",
+      "runtime": null,
+      "spec": "# fn-1-spriterman-cli-tool.2 Implement CLI framework and create command\n\n## Description\nImplement the main spriterman CLI script with subcommand dispatch and the `create` command.\n\n**Size:** M\n**Files:** spriterman\n\n## Approach\n\n1. Create CLI framework with:\n   - Shebang and strict mode: `#!/usr/bin/env bash` + `set -euo pipefail`\n   - Colored logging functions: `_info`, `_warn`, `_error`, `_debug`\n   - Error collection array: `ERRORS=()`\n   - Dependency check for `sprite` CLI\n   - Subcommand dispatch via `case` statement\n\n2. Implement `cmd_create()`:\n   - Validate sprite name argument\n   - Run `sprite create --skip-console <name>` \n   - Wait for sprite ready (sprite exec auto-wakes, but verify with echo)\n   - Call setup steps in order (apt, npm, pip, clone, copy, aliases)\n   - Collect errors, continue on failure\n   - Report summary at end\n\n3. Setup step functions:\n   - `install_apt_packages()` - parse packages.txt for apt: entries\n   - `install_npm_packages()` - parse packages.txt for npm: entries\n   - `install_pip_packages()` - parse packages.txt for pip: entries\n   - `clone_template()` - git clone spriterman repo to /tmp/spriterman\n   - `copy_claude_config()` - cp -r /tmp/spriterman/claude ~/.claude\n   - `install_aliases()` - source line or copy to ~/.bashrc\n\n4. Error reporting:\n   - Use `set +e` around each step, capture exit code\n   - Add failures to ERRORS array\n   - At end, print all errors and exit with code 1 if any failures\n\n## Key Context\n\n- Use `sprite exec -s <name> -- <cmd>` for remote execution\n- sprite CLI handles authentication via `sprite login`\n- Sprites auto-wake on first exec command (no explicit polling needed)\n- Follow pattern from hedgedoc/cli for case dispatch\n- Follow pattern from jnsgruk/firecracker-ubuntu for colored logging\n## Acceptance\n- [ ] spriterman is executable with shebang\n- [ ] Running `spriterman` with no args shows usage\n- [ ] `spriterman create <name>` creates sprite and runs all setup steps\n- [ ] Missing sprite CLI detected with clear error message\n- [ ] Partial failures don't stop other steps\n- [ ] All failures reported at end with summary\n- [ ] Exit code 0 on full success, 1 on partial failure, 2 on fatal error\n## Done summary\nTBD\n\n## Evidence\n- Commits:\n- Tests:\n- PRs:\n"
+    },
+    {
+      "data": {
+        "assignee": null,
+        "claim_note": "",
+        "claimed_at": null,
+        "created_at": "2026-02-02T01:42:23.701434Z",
+        "depends_on": [
+          "fn-1-spriterman-cli-tool.2"
+        ],
+        "epic": "fn-1-spriterman-cli-tool",
+        "id": "fn-1-spriterman-cli-tool.3",
+        "priority": null,
+        "spec_path": ".flow/tasks/fn-1-spriterman-cli-tool.3.md",
+        "status": "todo",
+        "title": "Implement update and export commands",
+        "updated_at": "2026-02-02T01:43:10.114579Z"
+      },
+      "id": "fn-1-spriterman-cli-tool.3",
+      "runtime": null,
+      "spec": "# fn-1-spriterman-cli-tool.3 Implement update and export commands\n\n## Description\nImplement the `update` and `export` commands for spriterman.\n\n**Size:** M\n**Files:** spriterman\n\n## Approach\n\n### Update Command\n\n1. Implement `cmd_update()`:\n   - Validate sprite name argument\n   - Verify sprite exists (run `sprite exec -s <name> -- echo ok`)\n   - Run setup steps (same as create, but skip sprite creation)\n   - Use idempotency checks before each step\n\n2. Idempotency checks:\n   - apt: `sprite exec -s <name> -- dpkg -l <pkg> 2>/dev/null | grep -q ^ii`\n   - npm: `sprite exec -s <name> -- npm list -g <pkg> --depth=0 2>/dev/null | grep -q <pkg>`\n   - pip: `sprite exec -s <name> -- pip show <pkg> 2>/dev/null`\n   - aliases: `sprite exec -s <name> -- grep -qF \"source.*spriterman\" ~/.bashrc`\n   - ~/.claude/: Always overwrite (no merge)\n\n### Export Command\n\n1. Implement `cmd_export()`:\n   - Validate sprite name argument\n   - Extract configuration sections:\n     - Aliases: `sprite exec -s <name> -- cat ~/.bashrc` and parse\n     - Packages: List installed apt/npm/pip packages\n     - Claude config: `sprite exec -s <name> -- cat ~/.claude/settings.json` etc.\n   - Output to stdout in shell-readable format\n\n2. Output format (shell script that can be sourced):\n   ```bash\n   # Exported from sprite: <name>\n   # Date: <timestamp>\n   \n   # Aliases\n   alias foo='bar'\n   \n   # Packages\n   # apt: git curl jq yq\n   # npm: pnpm\n   # pip: uv\n   \n   # Claude config would need separate handling\n   ```\n\n## Key Context\n\n- Update must be safe to run multiple times without side effects\n- Export output should be human-readable and useful for updating template\n- Package list extraction: `apt list --installed`, `npm list -g --depth=0`, `pip list`\n## Acceptance\n- [ ] `spriterman update <name>` re-applies template to existing sprite\n- [ ] Update is idempotent - running twice produces same result, no duplicates\n- [ ] Update on non-existent sprite gives clear error\n- [ ] `spriterman export <name>` outputs config to stdout\n- [ ] Export includes aliases, package list, and claude config summary\n- [ ] Export output is formatted and human-readable\n## Done summary\nTBD\n\n## Evidence\n- Commits:\n- Tests:\n- PRs:\n"
+    },
+    {
+      "data": {
+        "assignee": null,
+        "claim_note": "",
+        "claimed_at": null,
+        "created_at": "2026-02-02T01:42:23.973885Z",
+        "depends_on": [
+          "fn-1-spriterman-cli-tool.3"
+        ],
+        "epic": "fn-1-spriterman-cli-tool",
+        "id": "fn-1-spriterman-cli-tool.4",
+        "priority": null,
+        "spec_path": ".flow/tasks/fn-1-spriterman-cli-tool.4.md",
+        "status": "todo",
+        "title": "Add Claude config template and end-to-end testing",
+        "updated_at": "2026-02-02T01:43:20.838878Z"
+      },
+      "id": "fn-1-spriterman-cli-tool.4",
+      "runtime": null,
+      "spec": "# fn-1-spriterman-cli-tool.4 Add Claude config template and end-to-end testing\n\n## Description\nAdd the Claude config template directory and perform end-to-end testing on a real sprite.\n\n**Size:** M\n**Files:** claude/*, README.md\n\n## Approach\n\n### Claude Config Template\n\n1. Create claude/ directory structure:\n   - Add user's current ~/.claude/ contents (settings.json, etc.)\n   - Or create placeholder with instructions if user hasn't provided\n   - Document what files are expected\n\n2. Files typically in ~/.claude/:\n   - settings.json (permissions, defaults)\n   - allowed-tools/ or permissions config\n   - MCP server configs\n   - Any custom plugins\n\n### End-to-End Testing\n\n1. Test `spriterman create`:\n   - Create a test sprite: `spriterman create test-spriterman-e2e`\n   - Verify all packages installed\n   - Verify aliases work\n   - Verify ~/.claude/ exists on sprite\n   - Delete test sprite after\n\n2. Test `spriterman update`:\n   - Run update on existing sprite\n   - Verify no duplicate aliases\n   - Verify packages not reinstalled (check timing)\n\n3. Test `spriterman export`:\n   - Export config from test sprite\n   - Verify output is parseable\n   - Verify it matches what was set up\n\n4. Update README with:\n   - Verified installation steps\n   - Example output\n   - Troubleshooting section\n\n## Key Context\n\n- User should copy their own ~/.claude/ contents to the repo\n- Testing requires actual sprite creation (uses quota)\n- Clean up test sprites after testing\n## Acceptance\n- [ ] claude/ directory contains valid Claude Code configuration or placeholder with instructions\n- [ ] End-to-end test of create command succeeds on real sprite\n- [ ] End-to-end test of update command is idempotent\n- [ ] End-to-end test of export command produces valid output\n- [ ] README updated with verified examples and troubleshooting\n- [ ] Test sprite cleaned up after testing\n## Done summary\nTBD\n\n## Evidence\n- Commits:\n- Tests:\n- PRs:\n"
+    }
+  ]
+}

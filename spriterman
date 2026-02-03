@@ -1,0 +1,1004 @@
+#!/usr/bin/env bash
+# spriterman - CLI tool for creating and managing templated sprites
+# https://github.com/sandalsoft/spriterman
+
+set -euo pipefail
+
+# ------------------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${SCRIPT_DIR}/config"
+PACKAGES_FILE="${CONFIG_DIR}/packages.txt"
+SPRITERMAN_REPO="https://github.com/sandalsoft/spriterman.git"
+# SPRITERMAN_TMP is set dynamically per-run to avoid collisions
+
+# ------------------------------------------------------------------------------
+# Colored Logging
+# ------------------------------------------------------------------------------
+
+# Colors (only if terminal supports them)
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m' # No Color
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+fi
+
+_info() {
+    printf '%b[INFO]%b %s\n' "${GREEN}" "${NC}" "$*"
+}
+
+_warn() {
+    printf '%b[WARN]%b %s\n' "${YELLOW}" "${NC}" "$*" >&2
+}
+
+_error() {
+    printf '%b[ERROR]%b %s\n' "${RED}" "${NC}" "$*" >&2
+}
+
+_debug() {
+    if [[ "${DEBUG:-}" == "1" ]]; then
+        printf '%b[DEBUG]%b %s\n' "${BLUE}" "${NC}" "$*" >&2
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Error Collection
+# ------------------------------------------------------------------------------
+
+ERRORS=()
+
+add_error() {
+    ERRORS+=("$1")
+}
+
+report_errors() {
+    if [[ ${#ERRORS[@]} -gt 0 ]]; then
+        echo ""
+        _error "Setup completed with ${#ERRORS[@]} error(s):"
+        for err in "${ERRORS[@]}"; do
+            printf '  %b-%b %s\n' "${RED}" "${NC}" "$err"
+        done
+        return 1
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Validation
+# ------------------------------------------------------------------------------
+
+validate_sprite_name() {
+    local name="$1"
+    # Sprite names must start with alphanumeric and contain only alphanumeric, dash, underscore
+    if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+        _error "Invalid sprite name: '$name'"
+        _error "Names must start with alphanumeric and contain only alphanumeric, dash, or underscore"
+        exit 3
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Dependency Checks
+# ------------------------------------------------------------------------------
+
+check_sprite_cli() {
+    if ! command -v sprite &> /dev/null; then
+        _error "sprite CLI not found. Please install it first:"
+        _error "  curl https://sprites.dev/install.sh | bash"
+        exit 2
+    fi
+    _debug "sprite CLI found at $(command -v sprite)"
+}
+
+# ------------------------------------------------------------------------------
+# Setup Step Functions
+# ------------------------------------------------------------------------------
+
+install_apt_packages() {
+    local sprite_name="$1"
+    local packages=()
+
+    _info "Installing apt packages on '$sprite_name'..."
+
+    # Check packages file exists
+    if [[ ! -f "$PACKAGES_FILE" ]]; then
+        add_error "packages.txt not found at $PACKAGES_FILE"
+        return 1
+    fi
+
+    # Parse packages.txt for apt: entries
+    while IFS= read -r line; do
+        # Strip trailing comments and whitespace
+        line="${line%%#*}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+
+        if [[ "$line" =~ ^apt:(.+)$ ]]; then
+            local pkg="${BASH_REMATCH[1]}"
+            # Trim whitespace from package name
+            pkg="${pkg%"${pkg##*[![:space:]]}"}"
+            pkg="${pkg#"${pkg%%[![:space:]]*}"}"
+            [[ -n "$pkg" ]] && packages+=("$pkg")
+        fi
+    done < "$PACKAGES_FILE"
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        _info "No apt packages to install"
+        return 0
+    fi
+
+    _debug "Installing apt packages: ${packages[*]}"
+
+    set +e
+    # Use sudo -n to fail fast if passwordless sudo unavailable
+    sprite exec -s "$sprite_name" -- sudo -n DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    local update_code=$?
+    set -e
+
+    if [[ $update_code -ne 0 ]]; then
+        add_error "apt-get update failed with exit code $update_code (may need passwordless sudo)"
+        return 1
+    fi
+
+    set +e
+    # Use -- to prevent package names starting with - being parsed as options
+    sprite exec -s "$sprite_name" -- sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -- "${packages[@]}"
+    local install_code=$?
+    set -e
+
+    if [[ $install_code -ne 0 ]]; then
+        add_error "apt-get install failed with exit code $install_code"
+        return 1
+    fi
+
+    _info "apt packages installed successfully"
+    return 0
+}
+
+install_npm_packages() {
+    local sprite_name="$1"
+    local packages=()
+
+    _info "Installing npm global packages on '$sprite_name'..."
+
+    # Check packages file exists
+    if [[ ! -f "$PACKAGES_FILE" ]]; then
+        add_error "packages.txt not found at $PACKAGES_FILE"
+        return 1
+    fi
+
+    # Parse packages.txt for npm: entries
+    while IFS= read -r line; do
+        # Strip trailing comments and whitespace
+        line="${line%%#*}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+
+        if [[ "$line" =~ ^npm:(.+)$ ]]; then
+            local pkg="${BASH_REMATCH[1]}"
+            # Trim whitespace from package name
+            pkg="${pkg%"${pkg##*[![:space:]]}"}"
+            pkg="${pkg#"${pkg%%[![:space:]]*}"}"
+            [[ -n "$pkg" ]] && packages+=("$pkg")
+        fi
+    done < "$PACKAGES_FILE"
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        _info "No npm packages to install"
+        return 0
+    fi
+
+    _debug "Installing npm packages: ${packages[*]}"
+
+    set +e
+    # Use -- to prevent package names starting with - being parsed as options
+    sprite exec -s "$sprite_name" -- npm install -g -- "${packages[@]}"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        add_error "npm install failed with exit code $exit_code"
+        return 1
+    fi
+
+    _info "npm packages installed successfully"
+    return 0
+}
+
+install_pip_packages() {
+    local sprite_name="$1"
+    local packages=()
+
+    _info "Installing pip packages on '$sprite_name'..."
+
+    # Check packages file exists
+    if [[ ! -f "$PACKAGES_FILE" ]]; then
+        add_error "packages.txt not found at $PACKAGES_FILE"
+        return 1
+    fi
+
+    # Parse packages.txt for pip: entries
+    while IFS= read -r line; do
+        # Strip trailing comments and whitespace
+        line="${line%%#*}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+
+        if [[ "$line" =~ ^pip:(.+)$ ]]; then
+            local pkg="${BASH_REMATCH[1]}"
+            # Trim whitespace from package name
+            pkg="${pkg%"${pkg##*[![:space:]]}"}"
+            pkg="${pkg#"${pkg%%[![:space:]]*}"}"
+            [[ -n "$pkg" ]] && packages+=("$pkg")
+        fi
+    done < "$PACKAGES_FILE"
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        _info "No pip packages to install"
+        return 0
+    fi
+
+    _debug "Installing pip packages: ${packages[*]}"
+
+    set +e
+    # Detect available pip command on sprite and use it
+    # Pass packages as positional args to avoid injection issues
+    sprite exec -s "$sprite_name" -- bash -c '
+        if command -v pip3 &>/dev/null; then
+            pip3 install --user "$@"
+        elif command -v pip &>/dev/null; then
+            pip install --user "$@"
+        elif command -v python3 &>/dev/null; then
+            python3 -m pip install --user "$@"
+        elif command -v python &>/dev/null; then
+            python -m pip install --user "$@"
+        else
+            echo "No pip installation found" >&2
+            exit 1
+        fi
+    ' -- "${packages[@]}"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        add_error "pip install failed with exit code $exit_code"
+        return 1
+    fi
+
+    _info "pip packages installed successfully"
+    return 0
+}
+
+clone_template() {
+    local sprite_name="$1"
+
+    _info "Cloning spriterman template repo on '$sprite_name'..."
+
+    set +e
+    # Create unique temp directory to avoid collisions with concurrent runs
+    # Use printf to ensure only the path is output (no extra lines)
+    SPRITERMAN_TMP=$(sprite exec -s "$sprite_name" -- bash -c 'printf "%s" "$(mktemp -d /tmp/spriterman.XXXXXX)"')
+    local mktemp_code=$?
+    set -e
+
+    if [[ $mktemp_code -ne 0 ]] || [[ -z "$SPRITERMAN_TMP" ]]; then
+        add_error "Failed to create temp directory on sprite"
+        return 1
+    fi
+
+    # Trim any trailing whitespace/newline from the path
+    SPRITERMAN_TMP="${SPRITERMAN_TMP%$'\n'}"
+    SPRITERMAN_TMP="${SPRITERMAN_TMP%$'\r'}"
+
+    # Validate the captured path is a single line starting with expected prefix
+    if [[ "$SPRITERMAN_TMP" != /tmp/spriterman.* ]] || [[ "$SPRITERMAN_TMP" == *$'\n'* ]]; then
+        add_error "Invalid temp directory path received: $SPRITERMAN_TMP"
+        SPRITERMAN_TMP=""
+        return 1
+    fi
+
+    _debug "Using temp directory: $SPRITERMAN_TMP"
+
+    set +e
+    # Pass repo URL and temp dir as positional args to avoid injection
+    sprite exec -s "$sprite_name" -- bash -c 'git clone "$1" "$2"' -- "${SPRITERMAN_REPO}" "${SPRITERMAN_TMP}"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        add_error "git clone failed with exit code $exit_code"
+        return 1
+    fi
+
+    _info "Template repo cloned successfully"
+    return 0
+}
+
+copy_claude_config() {
+    local sprite_name="$1"
+
+    _info "Copying Claude config to '$sprite_name'..."
+
+    # Check if SPRITERMAN_TMP was set by clone_template
+    if [[ -z "${SPRITERMAN_TMP:-}" ]]; then
+        _warn "Template not cloned, skipping Claude config copy"
+        return 0
+    fi
+
+    set +e
+    # Copy from the cloned template to ~/.claude
+    # Use cp -a with /. suffix to include dotfiles and handle empty dirs
+    # Pass SPRITERMAN_TMP as positional arg to avoid string splicing
+    sprite exec -s "$sprite_name" -- bash -c '
+        tmp_dir="$1"
+        src_dir="$tmp_dir/claude"
+        if [[ -d "$src_dir" ]]; then
+            mkdir -p ~/.claude
+            # Use /. to copy contents including dotfiles
+            cp -a "$src_dir"/. ~/.claude/
+        else
+            echo "Claude config directory not found in template (optional)" >&2
+            exit 0
+        fi
+    ' -- "${SPRITERMAN_TMP}"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        add_error "Claude config copy failed with exit code $exit_code"
+        return 1
+    fi
+
+    _info "Claude config copied successfully"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Idempotent Setup Step Functions (for update command)
+# ------------------------------------------------------------------------------
+
+install_apt_packages_idempotent() {
+    local sprite_name="$1"
+    local packages=()
+    local packages_to_install=()
+
+    _info "Checking apt packages on '$sprite_name'..."
+
+    # Check packages file exists
+    if [[ ! -f "$PACKAGES_FILE" ]]; then
+        add_error "packages.txt not found at $PACKAGES_FILE"
+        return 1
+    fi
+
+    # Parse packages.txt for apt: entries
+    while IFS= read -r line; do
+        # Strip trailing comments and whitespace
+        line="${line%%#*}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+
+        if [[ "$line" =~ ^apt:(.+)$ ]]; then
+            local pkg="${BASH_REMATCH[1]}"
+            # Trim whitespace from package name
+            pkg="${pkg%"${pkg##*[![:space:]]}"}"
+            pkg="${pkg#"${pkg%%[![:space:]]*}"}"
+            [[ -n "$pkg" ]] && packages+=("$pkg")
+        fi
+    done < "$PACKAGES_FILE"
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        _info "No apt packages to install"
+        return 0
+    fi
+
+    # Check which packages are already installed
+    for pkg in "${packages[@]}"; do
+        set +e
+        sprite exec -s "$sprite_name" -- dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"
+        local installed=$?
+        set -e
+
+        if [[ $installed -ne 0 ]]; then
+            packages_to_install+=("$pkg")
+            _debug "Package '$pkg' not installed, will install"
+        else
+            _debug "Package '$pkg' already installed, skipping"
+        fi
+    done
+
+    if [[ ${#packages_to_install[@]} -eq 0 ]]; then
+        _info "All apt packages already installed"
+        return 0
+    fi
+
+    _info "Installing ${#packages_to_install[@]} apt package(s): ${packages_to_install[*]}"
+
+    set +e
+    sprite exec -s "$sprite_name" -- sudo -n DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    local update_code=$?
+    set -e
+
+    if [[ $update_code -ne 0 ]]; then
+        add_error "apt-get update failed with exit code $update_code (may need passwordless sudo)"
+        return 1
+    fi
+
+    set +e
+    sprite exec -s "$sprite_name" -- sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -- "${packages_to_install[@]}"
+    local install_code=$?
+    set -e
+
+    if [[ $install_code -ne 0 ]]; then
+        add_error "apt-get install failed with exit code $install_code"
+        return 1
+    fi
+
+    _info "apt packages installed successfully"
+    return 0
+}
+
+install_npm_packages_idempotent() {
+    local sprite_name="$1"
+    local packages=()
+    local packages_to_install=()
+
+    _info "Checking npm global packages on '$sprite_name'..."
+
+    # Check packages file exists
+    if [[ ! -f "$PACKAGES_FILE" ]]; then
+        add_error "packages.txt not found at $PACKAGES_FILE"
+        return 1
+    fi
+
+    # Parse packages.txt for npm: entries
+    while IFS= read -r line; do
+        # Strip trailing comments and whitespace
+        line="${line%%#*}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+
+        if [[ "$line" =~ ^npm:(.+)$ ]]; then
+            local pkg="${BASH_REMATCH[1]}"
+            # Trim whitespace from package name
+            pkg="${pkg%"${pkg##*[![:space:]]}"}"
+            pkg="${pkg#"${pkg%%[![:space:]]*}"}"
+            [[ -n "$pkg" ]] && packages+=("$pkg")
+        fi
+    done < "$PACKAGES_FILE"
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        _info "No npm packages to install"
+        return 0
+    fi
+
+    # Check which packages are already installed
+    for pkg in "${packages[@]}"; do
+        set +e
+        sprite exec -s "$sprite_name" -- npm list -g "$pkg" --depth=0 2>/dev/null | grep -q "$pkg"
+        local installed=$?
+        set -e
+
+        if [[ $installed -ne 0 ]]; then
+            packages_to_install+=("$pkg")
+            _debug "Package '$pkg' not installed, will install"
+        else
+            _debug "Package '$pkg' already installed, skipping"
+        fi
+    done
+
+    if [[ ${#packages_to_install[@]} -eq 0 ]]; then
+        _info "All npm packages already installed"
+        return 0
+    fi
+
+    _info "Installing ${#packages_to_install[@]} npm package(s): ${packages_to_install[*]}"
+
+    set +e
+    sprite exec -s "$sprite_name" -- npm install -g -- "${packages_to_install[@]}"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        add_error "npm install failed with exit code $exit_code"
+        return 1
+    fi
+
+    _info "npm packages installed successfully"
+    return 0
+}
+
+install_pip_packages_idempotent() {
+    local sprite_name="$1"
+    local packages=()
+    local packages_to_install=()
+
+    _info "Checking pip packages on '$sprite_name'..."
+
+    # Check packages file exists
+    if [[ ! -f "$PACKAGES_FILE" ]]; then
+        add_error "packages.txt not found at $PACKAGES_FILE"
+        return 1
+    fi
+
+    # Parse packages.txt for pip: entries
+    while IFS= read -r line; do
+        # Strip trailing comments and whitespace
+        line="${line%%#*}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+
+        if [[ "$line" =~ ^pip:(.+)$ ]]; then
+            local pkg="${BASH_REMATCH[1]}"
+            # Trim whitespace from package name
+            pkg="${pkg%"${pkg##*[![:space:]]}"}"
+            pkg="${pkg#"${pkg%%[![:space:]]*}"}"
+            [[ -n "$pkg" ]] && packages+=("$pkg")
+        fi
+    done < "$PACKAGES_FILE"
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        _info "No pip packages to install"
+        return 0
+    fi
+
+    # Check which packages are already installed
+    for pkg in "${packages[@]}"; do
+        set +e
+        sprite exec -s "$sprite_name" -- pip show "$pkg" 2>/dev/null | grep -q "^Name:"
+        local installed=$?
+        set -e
+
+        if [[ $installed -ne 0 ]]; then
+            packages_to_install+=("$pkg")
+            _debug "Package '$pkg' not installed, will install"
+        else
+            _debug "Package '$pkg' already installed, skipping"
+        fi
+    done
+
+    if [[ ${#packages_to_install[@]} -eq 0 ]]; then
+        _info "All pip packages already installed"
+        return 0
+    fi
+
+    _info "Installing ${#packages_to_install[@]} pip package(s): ${packages_to_install[*]}"
+
+    set +e
+    sprite exec -s "$sprite_name" -- bash -c '
+        if command -v pip3 &>/dev/null; then
+            pip3 install --user "$@"
+        elif command -v pip &>/dev/null; then
+            pip install --user "$@"
+        elif command -v python3 &>/dev/null; then
+            python3 -m pip install --user "$@"
+        elif command -v python &>/dev/null; then
+            python -m pip install --user "$@"
+        else
+            echo "No pip installation found" >&2
+            exit 1
+        fi
+    ' -- "${packages_to_install[@]}"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        add_error "pip install failed with exit code $exit_code"
+        return 1
+    fi
+
+    _info "pip packages installed successfully"
+    return 0
+}
+
+install_aliases() {
+    local sprite_name="$1"
+
+    _info "Installing aliases on '$sprite_name'..."
+
+    # Check if SPRITERMAN_TMP was set by clone_template
+    if [[ -z "${SPRITERMAN_TMP:-}" ]]; then
+        _warn "Template not cloned, skipping alias installation"
+        return 0
+    fi
+
+    set +e
+    # Copy aliases to persistent location and add source line to .bashrc
+    # Pass SPRITERMAN_TMP as positional arg to avoid string splicing
+    sprite exec -s "$sprite_name" -- bash -c '
+        tmp_dir="$1"
+        persistent_dir="$HOME/.spriterman"
+        mkdir -p "$persistent_dir"
+
+        # Copy aliases from cloned template to persistent location
+        if [[ -f "$tmp_dir/config/aliases.sh" ]]; then
+            cp "$tmp_dir/config/aliases.sh" "$persistent_dir/aliases.sh"
+        else
+            echo "aliases.sh not found in template" >&2
+            exit 1
+        fi
+
+        source_line="# Spriterman aliases"
+        source_cmd="[[ -f \$HOME/.spriterman/aliases.sh ]] && source \$HOME/.spriterman/aliases.sh"
+
+        # Add source line to .bashrc if not already present
+        if ! grep -qF "$source_line" ~/.bashrc 2>/dev/null; then
+            echo "" >> ~/.bashrc
+            echo "$source_line" >> ~/.bashrc
+            echo "$source_cmd" >> ~/.bashrc
+            echo "Aliases installed to ~/.spriterman/aliases.sh"
+        else
+            echo "Aliases already configured in .bashrc"
+        fi
+    ' -- "${SPRITERMAN_TMP}"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        add_error "Alias installation failed with exit code $exit_code"
+        return 1
+    fi
+
+    _info "Aliases installed successfully"
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Cleanup
+# ------------------------------------------------------------------------------
+
+cleanup_temp() {
+    local sprite_name="$1"
+    if [[ -n "${SPRITERMAN_TMP:-}" ]]; then
+        _debug "Cleaning up temp directory: $SPRITERMAN_TMP"
+        sprite exec -s "$sprite_name" -- rm -rf "$SPRITERMAN_TMP" 2>/dev/null || true
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Commands
+# ------------------------------------------------------------------------------
+
+cmd_create() {
+    local sprite_name="${1:-}"
+
+    if [[ -z "$sprite_name" ]]; then
+        _error "Usage: spriterman create <name>"
+        _error "Missing sprite name"
+        exit 3
+    fi
+
+    # Validate sprite name to prevent option injection
+    validate_sprite_name "$sprite_name"
+
+    _info "Creating sprite '$sprite_name'..."
+
+    # Check sprite CLI is available
+    check_sprite_cli
+
+    # Create the sprite
+    set +e
+    sprite create --skip-console "$sprite_name"
+    local create_code=$?
+    set -e
+
+    if [[ $create_code -ne 0 ]]; then
+        _error "Failed to create sprite '$sprite_name' (exit code: $create_code)"
+        exit 2
+    fi
+
+    _info "Sprite '$sprite_name' created, waiting for ready..."
+
+    # Wait for sprite to be ready by running a simple command
+    # sprite exec auto-wakes sprites
+    set +e
+    sprite exec -s "$sprite_name" -- echo "Sprite is ready"
+    local ready_code=$?
+    set -e
+
+    if [[ $ready_code -ne 0 ]]; then
+        _error "Sprite '$sprite_name' failed to wake (exit code: $ready_code)"
+        exit 2
+    fi
+
+    _info "Running setup steps..."
+    echo ""
+
+    # Run all setup steps, collecting errors
+    install_apt_packages "$sprite_name" || true
+    install_npm_packages "$sprite_name" || true
+    install_pip_packages "$sprite_name" || true
+    clone_template "$sprite_name" || true
+    copy_claude_config "$sprite_name" || true
+    install_aliases "$sprite_name" || true
+
+    # Cleanup temp directory on sprite
+    cleanup_temp "$sprite_name"
+
+    echo ""
+
+    # Report results
+    if report_errors; then
+        _info "Sprite '$sprite_name' created and configured successfully!"
+        exit 0
+    else
+        _warn "Sprite '$sprite_name' created with some failures (see above)"
+        exit 1
+    fi
+}
+
+cmd_update() {
+    local sprite_name="${1:-}"
+
+    if [[ -z "$sprite_name" ]]; then
+        _error "Usage: spriterman update <name>"
+        _error "Missing sprite name"
+        exit 3
+    fi
+
+    # Validate sprite name to prevent option injection
+    validate_sprite_name "$sprite_name"
+
+    _info "Updating sprite '$sprite_name'..."
+
+    # Check sprite CLI is available
+    check_sprite_cli
+
+    # Verify sprite exists by running a simple command
+    set +e
+    sprite exec -s "$sprite_name" -- echo "Sprite exists" >/dev/null 2>&1
+    local exists_code=$?
+    set -e
+
+    if [[ $exists_code -ne 0 ]]; then
+        _error "Sprite '$sprite_name' does not exist or is not accessible"
+        _error "Use 'spriterman create $sprite_name' to create a new sprite"
+        exit 2
+    fi
+
+    _info "Sprite '$sprite_name' found, running setup steps..."
+    echo ""
+
+    # Run all setup steps with idempotency, collecting errors
+    install_apt_packages_idempotent "$sprite_name" || true
+    install_npm_packages_idempotent "$sprite_name" || true
+    install_pip_packages_idempotent "$sprite_name" || true
+    clone_template "$sprite_name" || true
+    copy_claude_config "$sprite_name" || true
+    install_aliases "$sprite_name" || true
+
+    # Cleanup temp directory on sprite
+    cleanup_temp "$sprite_name"
+
+    echo ""
+
+    # Report results
+    if report_errors; then
+        _info "Sprite '$sprite_name' updated successfully!"
+        exit 0
+    else
+        _warn "Sprite '$sprite_name' updated with some failures (see above)"
+        exit 1
+    fi
+}
+
+cmd_export() {
+    local sprite_name="${1:-}"
+
+    if [[ -z "$sprite_name" ]]; then
+        _error "Usage: spriterman export <name>"
+        _error "Missing sprite name"
+        exit 3
+    fi
+
+    # Validate sprite name to prevent option injection
+    validate_sprite_name "$sprite_name"
+
+    # Check sprite CLI is available
+    check_sprite_cli
+
+    # Verify sprite exists by running a simple command
+    set +e
+    sprite exec -s "$sprite_name" -- echo "Sprite exists" >/dev/null 2>&1
+    local exists_code=$?
+    set -e
+
+    if [[ $exists_code -ne 0 ]]; then
+        _error "Sprite '$sprite_name' does not exist or is not accessible"
+        exit 2
+    fi
+
+    # Output header
+    echo "#!/usr/bin/env bash"
+    echo "# Exported from sprite: $sprite_name"
+    echo "# Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo ""
+
+    # Extract and output aliases
+    echo "# =============================================================================="
+    echo "# Aliases"
+    echo "# =============================================================================="
+    echo ""
+    set +e
+    local aliases_output
+    aliases_output=$(sprite exec -s "$sprite_name" -- bash -c '
+        # Extract alias definitions from .bashrc
+        if [[ -f ~/.bashrc ]]; then
+            grep "^alias " ~/.bashrc 2>/dev/null || true
+        fi
+        # Also check spriterman aliases file
+        if [[ -f ~/.spriterman/aliases.sh ]]; then
+            echo "# From ~/.spriterman/aliases.sh:"
+            cat ~/.spriterman/aliases.sh
+        fi
+    ' 2>/dev/null)
+    set -e
+    if [[ -n "$aliases_output" ]]; then
+        echo "$aliases_output"
+    else
+        echo "# No aliases found"
+    fi
+    echo ""
+
+    # Extract and output package list
+    echo "# =============================================================================="
+    echo "# Packages"
+    echo "# =============================================================================="
+    echo ""
+
+    # APT packages
+    echo "# apt packages:"
+    set +e
+    local apt_packages
+    apt_packages=$(sprite exec -s "$sprite_name" -- bash -c '
+        apt list --installed 2>/dev/null | tail -n +2 | cut -d/ -f1 | sort | head -100
+    ' 2>/dev/null)
+    set -e
+    if [[ -n "$apt_packages" ]]; then
+        echo "# $apt_packages" | tr '\n' ' '
+        echo ""
+    else
+        echo "# (none or unable to list)"
+    fi
+    echo ""
+
+    # NPM global packages
+    echo "# npm global packages:"
+    set +e
+    local npm_packages
+    npm_packages=$(sprite exec -s "$sprite_name" -- bash -c '
+        npm list -g --depth=0 2>/dev/null | tail -n +2 | sed "s/[├└]── //" | cut -d@ -f1 | sort
+    ' 2>/dev/null)
+    set -e
+    if [[ -n "$npm_packages" ]]; then
+        echo "# $npm_packages" | tr '\n' ' '
+        echo ""
+    else
+        echo "# (none or unable to list)"
+    fi
+    echo ""
+
+    # PIP packages
+    echo "# pip packages:"
+    set +e
+    local pip_packages
+    pip_packages=$(sprite exec -s "$sprite_name" -- bash -c '
+        if command -v pip3 &>/dev/null; then
+            pip3 list --format=freeze 2>/dev/null | cut -d= -f1 | sort | head -100
+        elif command -v pip &>/dev/null; then
+            pip list --format=freeze 2>/dev/null | cut -d= -f1 | sort | head -100
+        fi
+    ' 2>/dev/null)
+    set -e
+    if [[ -n "$pip_packages" ]]; then
+        echo "# $pip_packages" | tr '\n' ' '
+        echo ""
+    else
+        echo "# (none or unable to list)"
+    fi
+    echo ""
+
+    # Claude config summary
+    echo "# =============================================================================="
+    echo "# Claude Config (~/.claude/)"
+    echo "# =============================================================================="
+    echo ""
+    set +e
+    local claude_config
+    claude_config=$(sprite exec -s "$sprite_name" -- bash -c '
+        if [[ -d ~/.claude ]]; then
+            echo "# Files in ~/.claude/:"
+            ls -la ~/.claude/ 2>/dev/null | tail -n +2
+            echo ""
+            if [[ -f ~/.claude/settings.json ]]; then
+                echo "# ~/.claude/settings.json contents:"
+                cat ~/.claude/settings.json 2>/dev/null
+            fi
+        else
+            echo "# ~/.claude/ directory not found"
+        fi
+    ' 2>/dev/null)
+    set -e
+    echo "$claude_config"
+
+    exit 0
+}
+
+cmd_usage() {
+    cat <<EOF
+spriterman - CLI tool for creating and managing templated sprites
+
+Usage:
+    spriterman <command> [options]
+
+Commands:
+    create <name>     Create a new sprite with template configuration
+    update <name>     Update an existing sprite with latest template
+    export <name>     Export sprite config to stdout
+    help              Show this help message
+
+Examples:
+    spriterman create my-dev-sprite
+    spriterman update my-dev-sprite
+    spriterman export my-dev-sprite > config.sh
+
+Environment:
+    DEBUG=1           Enable debug output
+
+For more information, see: https://github.com/sandalsoft/spriterman
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# Main Dispatch
+# ------------------------------------------------------------------------------
+
+main() {
+    local cmd="${1:-}"
+
+    case "$cmd" in
+        create)
+            shift
+            cmd_create "$@"
+            ;;
+        update)
+            shift
+            cmd_update "$@"
+            ;;
+        export)
+            shift
+            cmd_export "$@"
+            ;;
+        help|--help|-h)
+            cmd_usage
+            exit 0
+            ;;
+        "")
+            cmd_usage
+            exit 0
+            ;;
+        *)
+            _error "Unknown command: $cmd"
+            echo ""
+            cmd_usage
+            exit 3
+            ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,18 @@
+{
+  "branch_name": "fn-1-spriterman-cli-tool",
+  "completion_review_status": "unknown",
+  "completion_reviewed_at": null,
+  "created_at": "2026-02-02T01:41:24.333086Z",
+  "default_impl": null,
+  "default_review": null,
+  "default_sync": null,
+  "depends_on_epics": [],
+  "id": "fn-1-spriterman-cli-tool",
+  "next_task": 1,
+  "plan_review_status": "unknown",
+  "plan_reviewed_at": null,
+  "spec_path": ".flow/specs/fn-1-spriterman-cli-tool.md",
+  "status": "open",
+  "title": "Spriterman CLI Tool",
+  "updated_at": "2026-02-02T01:42:15.285838Z"
+}
